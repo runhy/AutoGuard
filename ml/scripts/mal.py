@@ -69,8 +69,11 @@ def analyze_file(path):
         "is_malicious": int(pred),
         "confidence_score": float(round(prob,4)),
         "detected_features": [
-            f"Entropy={round(file_feature['Entropy'],4)}",
-            f"Crypto_prob={round(prob,4)}"
+            f"Entropy={round(file_feature['Entropy'],4)}", # 파일 난수성 -> 높을수록 악성일 확률 높음(패커나 암호화된 파일)
+            f"Sections={file_feature.get('num_sections',0)}", # 섹션 개수 -> 패킹이나 변조 여부 추정(섹션 수가 비정상정으로 많을 시 패킹/숨김/변조 가능)
+            f"DLLs={file_feature.get('num_dlls',0)}", # 외부 API 호출 -> 많으면 악성 가능성이 높지만 확정은 아님
+            f"Size_of_Image={file_feature.get('Size_of_Image',0)}", # PE 크기
+            f"Subsystem={file_feature.get('Subsystem',0)}" # 실행환경 정보
         ]
     }
     return result_json
