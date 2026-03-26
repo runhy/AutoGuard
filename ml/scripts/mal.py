@@ -5,7 +5,7 @@ import numpy as np
 import pefile
 import math
 
-with open("../ml/malware_model.pkl", "rb") as f:
+with open("../models/malware_model.pkl", "rb") as f:
     data = pickle.load(f)
 
 model = data["model"]
