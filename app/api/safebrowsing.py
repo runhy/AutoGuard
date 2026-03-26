@@ -1,18 +1,17 @@
 # app/api/safebrowsing.py
 
 from fastapi import APIRouter
-import requests
+import httpx
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
 router = APIRouter()
-
 GOOGLE_API_KEY = os.getenv("GOOGLE_SAFE_BROWSING_API_KEY")
 
 @router.get("/scan")
-def scan_url(url: str):
+async def scan_url(url: str):
     # Google Safe Browsing API 요청 body 구성
     payload = {
         "client" : {
@@ -32,10 +31,12 @@ def scan_url(url: str):
         }
     }
     
-    response = requests.post(
-        f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={GOOGLE_API_KEY}",
-        json = payload
-    )
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={GOOGLE_API_KEY}",
+            json = payload
+        )
+    
     
     if response.status_code == 200:
         data = response.json()
