@@ -60,7 +60,7 @@ def predict_file(feature, model, scaler, columns):
 # import sys
 # sys.path.append("/home/user/malware_module")
 # from mal import analyze_file -> 이거 하셔가지고
-# 이 함수 사용하면 됩니당
+# 이 함수 사용하면 됩니당 -> analyze_file("저장된 파일경로")
 def analyze_file(path):
     file_feature = extract_file_feature(sample_path, columns)
     pred, prob = predict_file(file_feature, model, scaler, columns)
