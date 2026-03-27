@@ -1,6 +1,7 @@
 # 에이전트 기초 설계입니다.
 import os
 import time
+import json
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -21,6 +22,8 @@ class AutoGuardAgent:
         
         # 프롬프트 로드
         self.instruction = self._load_instruction()
+        # 외부 구현된 AnalyzerAgent 인스턴스 주입받음
+        # self.analyzer = analyzer_instance
 
     def _load_instruction(self):
         ''' prompts/dispatcher.txt 파일을 읽어오는 내부 함수 '''
@@ -36,7 +39,8 @@ class AutoGuardAgent:
             model='gpt-4o',  # 성능을 위해 최신 모델 사용
             tools=[
                 {'type': 'function', 'function': self._get_url_tool_schema()},
-                {'type': 'function', 'function': self._get_email_tool_schema()}
+                {'type': 'function', 'function': self._get_email_tool_schema()},
+                {'type': 'function', 'function': self._get_file_tool_schema()}
             ]
         )
         self.assistant_id = assistant.id
@@ -72,6 +76,19 @@ class AutoGuardAgent:
             }
         }
     
+    def _get_file_tool_schema(self):
+        return {
+            'name': 'predict_file_malicious',
+            'description': '파일의 PE 헤더 및 특징을 분석하여 악성 여부를 판별합니다.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': '서버 내 파일의 절대 경로'}
+                },
+                'required': ['path']
+            }
+        }
+
     # 에이전트 실행 처리 함수
     def run_agent(self, user_message):
         '''
@@ -87,7 +104,7 @@ class AutoGuardAgent:
             content=user_message
         )
 
-        # 3. 에이전트 실행 (Run) 시작
+        # 3. 에이전트 실행(Run) 시작
         run = self.client.beta.threads.runs.create(     # 연결 -> 채팅창 메시지 + 에이전트
             thread_id=thread.id,
             assistant_id=self.assistant_id
@@ -109,7 +126,32 @@ class AutoGuardAgent:
             elif run.status == 'requires_action':
                 # 에이전트가 도구 호출을 요청한 상태
                 print('[!] 에이전트가 도구 호출을 요청했습니다.')
-                # 추후 수정 : 여기서 실제 ml_tool.py나 vt_tool.py를 호출하는 로직이 들어갑니다.
+                # 1. 호출할 도구 정보 추출
+                tool_calls = run.required_action.submit_tool_outputs.tool_calls
+                tool_outputs = []
+
+                for tool_call in tool_calls:
+                    function_name = tool_call.function.name
+                    arguments = json.loads(tool_call.function.arguments)
+
+                    # 2. 실제 ML/분석 모듈 호출 (어제 만든 AnalyzerAgent 연동)
+                    if function_name == 'predict_file_malicious':
+                        # 예시: 파일 분석 실행
+                        result = analyzer.analyze_file(arguments['path']) 
+                        tool_outputs.append({
+                            "tool_call_id": tool_call.id,
+                            "output": json.dumps(result)
+                        })
+                    
+                    # URL, Email 등 분기 처리
+
+                # 3. 결과를 에이전트에게 다시 전달하여 최종 답변 생성 유도
+                self.client.beta.threads.runs.submit_tool_outputs(
+                    thread_id=thread.id,
+                    run_id=run.id,
+                    tool_outputs=tool_outputs
+                )
+
                 return '도구 호출 로직 구현 필요'
 
             elif run.status in ['failed', 'expired', 'cancelled']:
