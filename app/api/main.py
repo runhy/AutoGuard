@@ -1,7 +1,22 @@
 # app/api/main.py
 
 from fastapi import FastAPI
-from app.api import safebrowsing, virustotal, websearch, analyze
+from fastapi.middleware.cors import CORSMiddleware 
+from app.api import safebrowsing, virustotal, websearch, analyze, file_scan
+import os
+import logging
+
+# 서버 시작 시 API 키 유효성 체크
+if not os.getenv("VIRUSTOTAL_API_KEY"):
+    raise RuntimeError("❌ VIRUSTOTAL_API_KEY 가 .env 에 설정되지 않았습니다")
+if not os.getenv("GOOGLE_SAFE_BROWSING_API_KEY"):
+    raise RuntimeError("❌ GOOGLE_SAFE_BROWSING_API_KEY 가 .env 에 설정되지 않았습니다")
+
+# 로깅 설정 (서버 시작 시 한 번만 설정)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+)
 
 # FastAPI 앱 인스턴스 생성 (서버의 중심)
 app = FastAPI(
@@ -10,10 +25,19 @@ app = FastAPI(
     version = "1.0.0"
 )
 
+# CORS 설정 추가 (Streamlit에서 FastAPI 호출 허용)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
 # 라우터 등록(내부)
 app.include_router(virustotal.router, prefix = "/virustotal", tags = ["virustotal"], include_in_schema=False)
 app.include_router(safebrowsing.router, prefix = "/safebrowsing", tags = ["safebrowsing"], include_in_schema=False)
 app.include_router(websearch.router, prefix = "/websearch", tags = ["websearch"], include_in_schema=False)
+app.include_router(file_scan.router, prefix="/file", tags=["File"], include_in_schema=False)
 
 # 라우터 등록(외부)
 app.include_router(analyze.router, prefix="/analyze", tags=["Analyze"])
