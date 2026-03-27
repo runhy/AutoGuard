@@ -5,6 +5,7 @@ import httpx                    # requests 대신 비동기 지원 라이브러�
 import os
 import asyncio                  # 대기 시간 지정
 import hashlib                  # URL 해시값 변환
+import logging
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 
@@ -15,12 +16,16 @@ load_dotenv()
 router = APIRouter()
 VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
 
+# 로그
+logger = logging.getLogger(__name__)
+
 # 검사할URL 요청 처리(비동기 처리)
 @router.get("/scan")
 async def scan_url(url: str):                     # url은 쿼리 파라미터로 받음
     # URL 형식 검증 (http:// 또는 https:// 로 시작해야 함)
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        logger.warning(f"유효하지 않은 URL 형식: {url}")
         return {
             "module": "URL_Analyzer",
             "is_malicious": 0,
@@ -44,6 +49,7 @@ async def scan_url(url: str):                     # url은 쿼리 파라미터�
             )
 
             if cached.status_code == 200:                       # 이미 분석된 URL이면 바로 반환
+                logger.info(f"캐시 히트: {url}")
                 stats = cached.json()["data"]["attributes"]["last_analysis_stats"]
                 return {
                     "module": "URL_Analyzer",
@@ -94,18 +100,21 @@ async def scan_url(url: str):                     # url은 쿼리 파라미터�
                 if result.status_code == 200:
                     status = result.json()["data"]["attributes"]["status"]  # 분석 완료 여부 확인
                     if status == "completed":                               # 완료되면 탈출
+                        logger.info(f"분석 완료: {url}")
                         break
                 await asyncio.sleep(2)    # 2초 대기
                 elapsed += 2              # 경과시간 누적
 
             # 30초 넘어도 안 끝나면 에러 반환
             if elapsed >= MAX_WAIT:
+                logger.error(f"분석 시간 초과: {url}")
                 return {
                     "error": "분석 시간 초과",
                     "status_code": 408
                 }
 
     except httpx.TimeoutException:                              # API 응답 시간 초과
+        logger.error(f"API 응답 시간 초과: {url}")
         return {
             "module": "URL_Analyzer",
             "is_malicious": 0,
@@ -113,6 +122,7 @@ async def scan_url(url: str):                     # url은 쿼리 파라미터�
             "detected_features": ["VirusTotal API 응답 시간 초과"]
         }
     except httpx.RequestError:                                  # API 연결 실패
+        logger.error(f"API 연결 실패: {url}")
         return {
             "module": "URL_Analyzer",
             "is_malicious": 0,

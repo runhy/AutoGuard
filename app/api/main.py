@@ -3,6 +3,20 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware 
 from app.api import safebrowsing, virustotal, websearch, analyze, file_scan
+import os
+import logging
+
+# 서버 시작 시 API 키 유효성 체크
+if not os.getenv("VIRUSTOTAL_API_KEY"):
+    raise RuntimeError("❌ VIRUSTOTAL_API_KEY 가 .env 에 설정되지 않았습니다")
+if not os.getenv("GOOGLE_SAFE_BROWSING_API_KEY"):
+    raise RuntimeError("❌ GOOGLE_SAFE_BROWSING_API_KEY 가 .env 에 설정되지 않았습니다")
+
+# 로깅 설정 (서버 시작 시 한 번만 설정)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+)
 
 # FastAPI 앱 인스턴스 생성 (서버의 중심)
 app = FastAPI(

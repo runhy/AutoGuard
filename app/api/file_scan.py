@@ -4,12 +4,15 @@ from fastapi import APIRouter, UploadFile, File
 import httpx                    # 비동기 지원 라이브러리
 import os
 import hashlib                  # 파일 해시값 변환
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
 
 router = APIRouter()
 VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
+
+logger = logging.getLogger(__name__)
 
 # 파일 해시값으로 VirusTotal DB 조회
 @router.post("/scan")
@@ -25,6 +28,7 @@ async def scan_file(file: UploadFile = File(...)):      # 파일 업로드 받�
         # 파일 크기 제한 (서버 메모리 보호용, ML팀 기준 넉넉하게 10MB)
         MAX_FILE_SIZE = 10 * 1024 * 1024            # 10MB
         if len(file_content) > MAX_FILE_SIZE:
+            logger.warning(f"파일 크기 초과: {file.filename}")
             return {
                 "module": "File_Analyzer",
                 "file_name": file.filename,
@@ -46,6 +50,7 @@ async def scan_file(file: UploadFile = File(...)):      # 파일 업로드 받�
 
             # 파일 DB에 있으면 즉시 반환
             if result.status_code == 200:
+                logger.info(f"파일 분석 완료: {file.filename} | 해시: {file_hash}")
                 stats = result.json()["data"]["attributes"]["last_analysis_stats"]
                 return {
                     "module": "File_Analyzer",
@@ -64,6 +69,7 @@ async def scan_file(file: UploadFile = File(...)):      # 파일 업로드 받�
 
             # 파일 DB에 없으면 (한 번도 분석된 적 없는 파일)
             elif result.status_code == 404:
+                logger.info(f"VirusTotal DB에 없는 파일: {file.filename}")
                 return {
                     "module": "File_Analyzer",
                     "file_name": file.filename,
