@@ -61,12 +61,8 @@ async def scan_url(url: str):
         return {
             "module" : "URL_Analyzer",
             "is_malicious" : is_malicious,
-            # 구글이 탐지하면 확실한 거라 100.0 (프론트엔드 규격)
-<<<<<<< HEAD
+            # 악성 비율 (0~1.0)
             "confidence_score": 1.0 if is_malicious else 0.0,
-=======
-            "confidence_score": 100.0 if is_malicious else 0.0,
->>>>>>> 2bcff1fae24d60dbc5ce5545f3d342e4d683622d
             "detected_features" : [
                 f"위협 유형: {m['threatType']}" for m in data.get("matches", [])
             ] if is_malicious else ["위협 없음"]

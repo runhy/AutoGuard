@@ -1,7 +1,8 @@
 # app/api/main.py
 
 from fastapi import FastAPI
-from app.api import safebrowsing, virustotal, websearch, analyze
+from fastapi.middleware.cors import CORSMiddleware 
+from app.api import safebrowsing, virustotal, websearch, analyze, file_scan
 
 # FastAPI 앱 인스턴스 생성 (서버의 중심)
 app = FastAPI(
@@ -10,10 +11,19 @@ app = FastAPI(
     version = "1.0.0"
 )
 
+# CORS 설정 추가 (Streamlit에서 FastAPI 호출 허용)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
 # 라우터 등록(내부)
 app.include_router(virustotal.router, prefix = "/virustotal", tags = ["virustotal"], include_in_schema=False)
 app.include_router(safebrowsing.router, prefix = "/safebrowsing", tags = ["safebrowsing"], include_in_schema=False)
 app.include_router(websearch.router, prefix = "/websearch", tags = ["websearch"], include_in_schema=False)
+app.include_router(file_scan.router, prefix="/file", tags=["File"], include_in_schema=False)
 
 # 라우터 등록(외부)
 app.include_router(analyze.router, prefix="/analyze", tags=["Analyze"])

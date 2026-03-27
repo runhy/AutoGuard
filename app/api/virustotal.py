@@ -5,6 +5,7 @@ import httpx                    # requests 대신 비동기 지원 라이브러�
 import os
 import asyncio                  # 대기 시간 지정
 import hashlib                  # URL 해시값 변환
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 # .env 파일 로더
@@ -17,6 +18,16 @@ VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
 # 검사할URL 요청 처리(비동기 처리)
 @router.get("/scan")
 async def scan_url(url: str):                     # url은 쿼리 파라미터로 받음
+    # URL 형식 검증 (http:// 또는 https:// 로 시작해야 함)
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return {
+            "module": "URL_Analyzer",
+            "is_malicious": 0,
+            "confidence_score": 0.0,
+            "detected_features": ["유효하지 않은 URL 형식 (http:// 또는 https:// 로 시작해야 함)"]
+        }
+        
     headers = {
         "x-apikey" : VIRUSTOTAL_API_KEY           # API key을 헤더의 담아 인증
     }

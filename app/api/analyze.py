@@ -2,8 +2,11 @@
 
 from fastapi import APIRouter
 import asyncio
+from fastapi import APIRouter, UploadFile, File
 from app.api.virustotal import scan_url as vt_scan        # virustotal 함수 가져오기
 from app.api.safebrowsing import scan_url as sb_scan      # safebrowsing 함수 가져오기
+from app.api.file_scan import scan_file as file_scan
+
 
 router = APIRouter()
 
@@ -29,3 +32,7 @@ async def analyze_url(url: str):
             "safebrowsing": sb_result
         }
     }
+    
+@router.post("/file")
+async def analyze_file(file: UploadFile = File(...)):
+    return await file_scan(file)
