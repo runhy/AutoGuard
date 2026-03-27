@@ -2,13 +2,15 @@ import pandas as pd
 import numpy as np
 import pefile
 import math
+import pickle
 
 with open("./malware_model.pkl", "rb") as f:
     data = pickle.load(f)
 
-model = data["model"]
-scaler = data["scaler"]
-columns = data["columns"]
+model     = data["model"]
+columns   = data["columns"]
+upper     = data["upper"]      # 클리핑 기준값 — 학습 때와 동일한 전처리 적용에 필요
+THRESHOLD = data["threshold"]  # 학습 때와 동일한 threshold 사용
 
 def get_entropy(file_path):
     with open(file_path,"rb") as f:
@@ -76,17 +78,16 @@ def extract_file_feature(fileName, columns):
                 file_feature[col] = feature_map[col]()
             else:
                 file_feature[col] = 0
-        except:
+        except Exception as e:
             file_feature[col] = 0
+            # print(f"[warn] {col}: {e}")  # 디버깅 시 주석 해제
 
     pe.close()
 
-    file_feature["Entropy"] = get_entropy(fileName)
-
     return file_feature
 
-def predict_file(feature, model, scaler, columns):
-
+# 악성 여부 판단
+def predict_file(feature, model, upper, columns, threshold):
     feature = pd.DataFrame([feature])
     for col in ['Size_of_Image', 'Size_of_Code']:
         if col in feature.columns:
@@ -94,11 +95,10 @@ def predict_file(feature, model, scaler, columns):
 
     feature = feature[columns]
 
-    feature_scaled = scaler.transform(feature)
+    # 학습 때와 동일한 클리핑 적용
+    feature = feature.clip(lower=0, upper=upper, axis=1)
 
-    y_prob = model.predict_proba(feature_scaled)[:, 1]
-
-    threshold = 0.5
+    y_prob = model.predict_proba(feature)[:, 1]
     y_pred = (y_prob > threshold).astype(int)
 
     return y_pred[0], y_prob[0]
@@ -109,7 +109,8 @@ def predict_file(feature, model, scaler, columns):
 # 이 함수 사용하면 됩니당 -> analyze_file("저장된 파일경로")
 def analyze_file(path):
     file_feature = extract_file_feature(path, columns)
-    pred, prob = predict_file(file_feature, model, scaler, columns)
+    file_feature["Entropy"] = get_entropy(path)  # Entropy는 예측 전에 추가해야 모델에 반영됨
+    pred, prob = predict_file(file_feature, model, upper, columns, THRESHOLD)
     result_json = {
         "module": "File_Analyzer",
         "is_malicious": int(pred),
@@ -123,5 +124,4 @@ def analyze_file(path):
         ]
     }
     return result_json
-
-#analyze_file("/content/drive/MyDrive/sample_malware3.exe")
+#analyze_file("/content/drive/MyDrive/sample_mal/Win32.Wannacry.exe")
