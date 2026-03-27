@@ -7,7 +7,7 @@ from pathlib import Path
 from scipy.sparse import hstack, csr_matrix
 
 # 모델 로드
-_MODEL_PATH = Path(__file__).parent.parent / "models" / "spam_V2.pkl"
+_MODEL_PATH = Path(__file__).parent.parent / "models" / "spam_V3.pkl"
 data = joblib.load(_MODEL_PATH)
 
 model   = data["model"]
