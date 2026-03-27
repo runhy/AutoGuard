@@ -1,11 +1,9 @@
-
-import pickle
 import pandas as pd
 import numpy as np
 import pefile
 import math
 
-with open("../models/malware_model.pkl", "rb") as f:
+with open("./malware_model.pkl", "rb") as f:
     data = pickle.load(f)
 
 model = data["model"]
@@ -26,35 +24,83 @@ def get_entropy(file_path):
 
 def extract_file_feature(fileName, columns):
     pe = pefile.PE(fileName)
+
+    oh  = pe.OPTIONAL_HEADER
+    dos = pe.DOS_HEADER
+
+    # 머신 러닝에 사용되는 피처들 목록
     feature_map = {
-        "Image_Base": lambda pe: pe.OPTIONAL_HEADER.ImageBase,
-        "Base_of_Code": lambda pe: pe.OPTIONAL_HEADER.BaseOfCode,
-        "Address_of_Entry_Point": lambda pe: pe.OPTIONAL_HEADER.AddressOfEntryPoint,
-        "Size_of_Image": lambda pe: pe.OPTIONAL_HEADER.SizeOfImage,
-        "Size_of_Code": lambda pe: pe.OPTIONAL_HEADER.SizeOfCode,
-        "Subsystem": lambda pe: pe.OPTIONAL_HEADER.Subsystem,
-        "num_sections": lambda pe: len(pe.sections),
-        "num_dlls": lambda pe: len(pe.DIRECTORY_ENTRY_IMPORT) if hasattr(pe,'DIRECTORY_ENTRY_IMPORT') else 0,
-        "num_functions": lambda pe: sum(len(entry.imports) for entry in pe.DIRECTORY_ENTRY_IMPORT) if hasattr(pe,'DIRECTORY_ENTRY_IMPORT') else 0,
+        "Address_of_Entry_Point":     lambda: oh.AddressOfEntryPoint,
+        "Base_of_Code":               lambda: oh.BaseOfCode,
+        "Base_of_Data":               lambda: getattr(oh, 'BaseOfData', 0),
+        "Checksum":                   lambda: oh.CheckSum,
+        "DLL_Characteristics":        lambda: oh.DllCharacteristics,
+        "File_Alignment":             lambda: oh.FileAlignment,
+        "Image_Base":                 lambda: oh.ImageBase,
+        "Loader_Flags":               lambda: oh.LoaderFlags,
+        "Magic":                      lambda: oh.Magic,
+        "Major_Image_Version":        lambda: oh.MajorImageVersion,
+        "Major_Linker_Version":       lambda: oh.MajorLinkerVersion,
+        "Major_OS_Version":           lambda: oh.MajorOperatingSystemVersion,
+        "Major_Subsystem_Version":    lambda: oh.MajorSubsystemVersion,
+        "Minor_Image_Version":        lambda: oh.MinorImageVersion,
+        "Minor_Linker_Version":       lambda: oh.MinorLinkerVersion,
+        "Minor_OS_Version":           lambda: oh.MinorOperatingSystemVersion,
+        "Minor_Subsystem_Version":    lambda: oh.MinorSubsystemVersion,
+        "Number_of_Rva_and_Sizes":    lambda: oh.NumberOfRvaAndSizes,
+        "Section_Alignment":          lambda: oh.SectionAlignment,
+        "Size_of_Code":               lambda: oh.SizeOfCode,
+        "Size_of_Headers":            lambda: oh.SizeOfHeaders,
+        "Size_of_Heap_Commit":        lambda: oh.SizeOfHeapCommit,
+        "Size_of_Heap_Reserve":       lambda: oh.SizeOfHeapReserve,
+        "Size_of_Image":              lambda: oh.SizeOfImage,
+        "Size_of_Initialized_Data":   lambda: oh.SizeOfInitializedData,
+        "Size_of_Stack_Commit":       lambda: oh.SizeOfStackCommit,
+        "Size_of_Stack_Reserve":      lambda: oh.SizeOfStackReserve,
+        "Size_of_Uninitialized_Data": lambda: oh.SizeOfUninitializedData,
+        "Subsystem":                  lambda: oh.Subsystem,
+        "Win32_Version_Value":        lambda: oh.Win32VersionValue,
+        # 도스 Header
+        "e_csum":                     lambda: dos.e_csum,
+        "e_ip":                       lambda: dos.e_ip,
+        "e_lfanew":                   lambda: dos.e_lfanew,
+        "num_sections":  lambda: len(pe.sections),
+        "num_dlls":      lambda: len(pe.DIRECTORY_ENTRY_IMPORT) if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT') else 0,
+        "num_functions": lambda: sum(len(e.imports) for e in pe.DIRECTORY_ENTRY_IMPORT) if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT') else 0,
     }
+
     file_feature = {}
     for col in columns:
         try:
-            file_feature[col] = feature_map[col](pe) if col in feature_map else 0
+            if col in feature_map:
+                file_feature[col] = feature_map[col]()
+            else:
+                file_feature[col] = 0
         except:
             file_feature[col] = 0
+
     pe.close()
+
     file_feature["Entropy"] = get_entropy(fileName)
+
     return file_feature
 
 def predict_file(feature, model, scaler, columns):
+
     feature = pd.DataFrame([feature])
-    for col in ['Size_of_Image','Size_of_Code']:
-        if col in feature.columns: feature[col] = np.log1p(feature[col])
+    for col in ['Size_of_Image', 'Size_of_Code']:
+        if col in feature.columns:
+            feature[col] = np.log1p(feature[col])
+
     feature = feature[columns]
+
     feature_scaled = scaler.transform(feature)
-    y_prob = model.predict_proba(feature_scaled)[:,1]
-    y_pred = (y_prob>0.4).astype(int)
+
+    y_prob = model.predict_proba(feature_scaled)[:, 1]
+
+    threshold = 0.5
+    y_pred = (y_prob > threshold).astype(int)
+
     return y_pred[0], y_prob[0]
 
 # import sys
@@ -62,7 +108,7 @@ def predict_file(feature, model, scaler, columns):
 # from mal import analyze_file -> 이거 하셔가지고
 # 이 함수 사용하면 됩니당 -> analyze_file("저장된 파일경로")
 def analyze_file(path):
-    file_feature = extract_file_feature(sample_path, columns)
+    file_feature = extract_file_feature(path, columns)
     pred, prob = predict_file(file_feature, model, scaler, columns)
     result_json = {
         "module": "File_Analyzer",
@@ -78,3 +124,4 @@ def analyze_file(path):
     }
     return result_json
 
+#analyze_file("/content/drive/MyDrive/sample_malware3.exe")
