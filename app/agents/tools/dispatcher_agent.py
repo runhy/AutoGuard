@@ -1,26 +1,38 @@
+# tools/dispatcher_agent.py
+# Dispatcher Agent - 사용자 요청을 분석하여 적절한 도구를 호출하고 최종 리포트를 생성합니다.
+
 import os
-import time
+import sys
 import json
 import asyncio
 import logging
-# [수정] 동기 방식의 OpenAI 대신 비동기 방식의 AsyncOpenAI 임포트
+# [수정] 비동기 방식의 AsyncOpenAI 임포트
 from openai import AsyncOpenAI 
 from dotenv import load_dotenv
 
-# [모듈 로드] 동일 폴더 내의 IntelAgent 임포트
+# ----------------------------------------------------------
+# [수정] 경로 설정 및 모듈 임포트 최적화
+# ----------------------------------------------------------
+current_dir = os.path.dirname(os.path.abspath(__file__)) # tools 폴더 위치
+# 최상위 .env 파일 경로 자동 탐색 (상위로 3단계 이동)
+project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
+dotenv_path = os.path.join(project_root, '.env')
+
+# .env 로드
+load_dotenv(dotenv_path)
+
+# [수정] 모듈 임포트: 실행 환경에 구애받지 않도록 시도
 try:
-    from intel_agent import IntelAgent
+    from app.agents.tools.intel_agent import IntelAgent
 except ImportError:
-    from agents.tools.intel_agent import IntelAgent
+    try:
+        from intel_agent import IntelAgent
+    except ImportError:
+        from agents.tools.intel_agent import IntelAgent
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# 1. 환경 변수 및 경로 설정
-current_dir = os.path.dirname(os.path.abspath(__file__))
-dotenv_path = os.path.join(current_dir, '..', '..', '.env')
-load_dotenv(dotenv_path)
 
 class AutoGuardAgent:
     """
@@ -29,21 +41,24 @@ class AutoGuardAgent:
     """
     def __init__(self, intel_agent):
         ''' [수정] OpenAI 클라이언트를 AsyncOpenAI로 변경하여 비동기 지원 '''
-        self.client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            raise ValueError("❌ OPENAI_API_KEY를 찾을 수 없습니다. .env 파일을 확인하세요.")
+            
+        self.client = AsyncOpenAI(api_key=api_key)
         self.assistant_id = None
         
-        # 프롬프트 로드
+        # [수정] 함수명 언더바 1개로 통일 (_load_instruction)
         self.instruction = self._load_instruction()
-        # 주입받은 인텔 에이전트 인스턴스 저장
         self.intel_agent = intel_agent
 
     def _load_instruction(self):
         ''' prompts/dispatcher.txt 파일을 읽어오는 내부 함수 '''
+        # 경로를 현재 파일 기준으로 유연하게 설정
         prompt_path = os.path.join(current_dir, '..', 'prompts', 'dispatcher.txt')
         with open(prompt_path, 'r', encoding='utf-8') as f:
             return f.read()
 
-    # [수정] 어시스턴트 생성 시에도 await가 필요하므로 async def로 변경
     async def create_inspector(self):
         ''' OpenAI 서버에 AutoGuard 에이전트를 실제로 생성합니다. '''
         assistant = await self.client.beta.assistants.create(
@@ -52,39 +67,36 @@ class AutoGuardAgent:
             model='gpt-4o',
             tools=[
                 {'type': 'function', 'function': self._get_url_tool_schema()},
-                {'type': 'function', 'function': self._get_intel_tool_schema()},
-                {'type': 'function', 'function': self._get_file_tool_schema()}
+                {'type': 'function', 'function': self._get_intel_tool_schema()}
             ]
         )
         self.assistant_id = assistant.id
-        print(f'[*] 에이전트 생성 완료! ID: {self.assistant_id}')
+        print(f'[*] 에이전트 생성 완료 (ID: {self.assistant_id})')
         return assistant
 
     # ------------------------------------------------------
-    # [도구 스키마 정의] GPT가 어떤 도구를 쓸지 결정하는 명세서
+    # [도구 스키마 정의]
     # ------------------------------------------------------
     def _get_url_tool_schema(self):
+        # URL 악성 여부 분석 도구 스키마
         return {
             'name': 'predict_url_malicious',
-            'description': 'URL의 악성 여부를 VirusTotal 및 SafeBrowsing으로 판별합니다.',
+            'description': 'URL 악성 여부 분석',
             'parameters': {
                 'type': 'object',
-                'properties': {
-                    'url': {'type': 'string', 'description': '분석할 URL 주소'}
-                },
+                'properties': {'url': {'type': 'string'}},
                 'required': ['url']
             }
         }
 
     def _get_intel_tool_schema(self):
+        # 최신 위협 인텔리전스 정보 조회 도구 스키마
         return {
             'name': 'search_threat_intel',
-            'description': '웹 검색을 통해 최신 보안 위협 정보 및 도메인 평판을 확인합니다.',
+            'description': '최신 위협 인텔리전스 정보 조회',
             'parameters': {
                 'type': 'object',
-                'properties': {
-                    'query': {'type': 'string', 'description': '검색할 키워드 또는 위협 요소'}
-                },
+                'properties': {'query': {'type': 'string'}},
                 'required': ['query']
             }
         }
@@ -103,63 +115,54 @@ class AutoGuardAgent:
         }
 
     # ------------------------------------------------------
-    # [핵심 로직] 에이전트 실행 및 비동기 도구 호출 루프
+    # [핵심 로직] 에이전트 실행 루프
     # ------------------------------------------------------
     async def run_agent(self, user_message):
         ''' 사용자 메시지를 처리하고 필요한 도구를 호출하여 최종 답변 생성 '''
         
-        # [수정] 모든 self.client 호출 앞에 await 추가
         # 1. 대화 스레드 생성
-        thread = await self.client.beta.threads.create()
-        
-        # 2. 메시지 추가
-        await self.client.beta.threads.messages.create(
-            thread_id=thread.id, 
+        thread = self.client.beta.threads.create()
+
+        # 2. 사용자 메시지 추가
+        self.client.beta.threads.messages.create(
+            thread_id=thread.id,
             role='user',
             content=user_message
         )
 
         # 3. 에이전트 실행
-        run = await self.client.beta.threads.runs.create(
+        run = self.client.beta.threads.runs.create(
             thread_id=thread.id,
             assistant_id=self.assistant_id
         )
-        print(f'[*] 분석 시작... (Run ID: {run.id})')
 
-        # 4. 루프 시작: 상태 감시 및 도구 실행
+        # 4. 상태 감시 루프
         while True:
-            # [수정] 상태 확인(retrieve) 시 await를 걸어야 서버가 멈추지 않고 다른 요청을 처리합니다.
             run = await self.client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
 
             if run.status == 'completed':
-                # 최종 답변 추출 시에도 await
                 messages = await self.client.beta.threads.messages.list(thread_id=thread.id)
                 return messages.data[0].content[0].text.value
 
             elif run.status == 'requires_action':
-                print('[!] 에이전트가 도구 호출을 요청했습니다.')
+                # 도구 호출 요청 → 실행 후 결과 제출
                 tool_calls = run.required_action.submit_tool_outputs.tool_calls
                 tool_outputs = []
 
                 for tool_call in tool_calls:
                     fn_name = tool_call.function.name
                     args = json.loads(tool_call.function.arguments)
+                    print(f'[*] 도구 호출 실행: {fn_name}')
 
-                    if fn_name == 'predict_file_malicious':
-                        result = await self.intel_agent.predict_file_malicious(args.get('file_hash'))
-                    
-                    elif fn_name == 'predict_url_malicious':
-                        result = await self.intel_agent.search_web(args.get('url'))
-                    
-                    else:
-                        result = await self.intel_agent.search_web(args.get('query'))
+                    # URL 분석 또는 위협 인텔 조회 → IntelAgent로 통합 처리
+                    target = args.get('url') or args.get('query')
+                    result = await self.intel_agent.search_web(target)
 
                     tool_outputs.append({
                         "tool_call_id": tool_call.id,
                         "output": json.dumps(result)
                     })
 
-                # [수정] 도구 결과 제출 시 await 추가
                 await self.client.beta.threads.runs.submit_tool_outputs(
                     thread_id=thread.id, 
                     run_id=run.id, 
@@ -169,20 +172,20 @@ class AutoGuardAgent:
             elif run.status in ['failed', 'expired', 'cancelled']:
                 return f'[-] 에이전트 실행 실패: {run.status}'
             
-            # [중요] 1초 대기하며 이벤트 루프에 제어권을 넘깁니다. 
+            # 이벤트 루프 제어권 양보 (1초 대기)
             await asyncio.sleep(1) 
 
 # ==========================================================
-# [테스트 실행부]
+# 테스트 실행부
 # ==========================================================
 if __name__ == '__main__':
     async def main():
+        # IntelAgent 초기화 (내부에서 환경변수 사용하므로 경로 확인 필수)
         intel = IntelAgent()
         agent = AutoGuardAgent(intel_agent=intel)
-        # [수정] 테스트 실행 시에도 await 추가
         await agent.create_inspector()
 
-        test_query = "이 파일 해시가 위험한지 분석해줘: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        test_query = "이 파일 해시 분석해줘: 275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
         response = await agent.run_agent(test_query)
         print(f"\n[최종 분석 결과]\n{response}")
 
