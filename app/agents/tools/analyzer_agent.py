@@ -1,132 +1,57 @@
-import pickle
-import pandas as pd
-import numpy as np
-import pefile
-import math
+# app/agents/tools/analyzer_agent.py
+# [수정] 기존 복잡한 로직(엔트로피 계산, 피처 맵 등)을 모두 제거 -> 전문 엔진들에 분석을 위임하는 구조로 간결하게 수정
+
 import os
-import re
-from collections import Counter
+import sys
+
+# [필수] 프로젝트 루트 및 ml/scripts 경로를 시스템 경로에 추가
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '../../../'))
+scripts_path = os.path.join(project_root, 'ml', 'scripts')
+
+if scripts_path not in sys.path:
+    sys.path.insert(0, scripts_path)
+
+# [수정] 전문 추론 엔진 모듈에서 분석 함수 임포트
+try:
+    from url import analyze_url as url_inference
+    from mal import analyze_file as file_inference
+    from mail import analyze_mail as email_inference
+    print("[*] 모든 전문 분석 엔진(URL, File, Email) 임포트 성공")
+except ImportError as e:
+    print(f"[!] 엔진 임포트 실패: {e}")
+    # 분석 엔진 파일(url.py, mal.py, mail.py)이 ml/scripts 폴더에 있는지 확인 필요
+    raise
+
 
 class AnalyzerAgent:
-    def __init__(self, model_path='../models/malware_model.pkl'):
-        '''3가지 모델(파일, URL, 스팸)을 로드하고 초기화합니다.'''
-        # 모델 경로 설정
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        base_path = os.path.abspath(os.path.join(current_dir, '../../ml/models'))
-        # 1. 파일 악성코드 모델 로드
-        self.file_model_data = self._load_pickle(os.path.join(base_path, 'malware_model.pkl'))
-        # 2. URL 악성 모델 로드
-        self.url_model_data = self._load_pickle(os.path.join(base_path, 'url_model.pkl'))
-        # 3. 스팸/피싱 메일 모델 로드
-        self.spam_model_data = self._load_pickle(os.path.join(base_path, 'spam_v3.pkl'))
-        
-    def _load_pickle(self, path):
-        if not os.path.exists(path):
-            print(f'[!] 경고: 모델 파일을 찾을 수 없습니다 -> {path}')
-            return None
-        with open(path, 'rb') as f:
-            return pickle.load(f)
+    """
+    DispatcherAgent의 요청을 받아 전문 ML 엔진으로 전달하는 오케스트레이터입니다.
+    직접적인 로직을 갖지 않고, 독립된 전문 모듈에 분석을 위임합니다.
+    """
+    def __init__(self):
+        # [수정] 모델 로드 및 피처 추출 로직은 이제 각 전문 스크립트(url.py, mal.py 등)가 담당합니다.
+        pass
+        # print(f"[*] 모델 탐색 경로: {base_path}") # 디버깅용 출력
 
-    def _get_entropy(self, data):
-        '''파일 데이터의 엔트로피를 계산합니다.'''
-        if not data: return 0
-        counter = Counter(data)
-        length = len(data)
-        entropy = -sum((count / length) * math.log2(count / length) for count in counter.values())
-        return entropy
 
-    def _extract_file_features(self, file_path):
-        '''PE 파일 피처 추출 및 컬럼 순서 정렬'''
-        pe = pefile.PE(file_path)
-        
-        # 기본 피처 맵 정의
-        feature_map = {
-            'Image_Base': pe.OPTIONAL_HEADER.ImageBase,
-            'Base_of_Code': pe.OPTIONAL_HEADER.BaseOfCode,
-            'Address_of_Entry_Point': pe.OPTIONAL_HEADER.AddressOfEntryPoint,
-            'Size_of_Image': pe.OPTIONAL_HEADER.SizeOfImage,
-            'Size_of_Code': pe.OPTIONAL_HEADER.SizeOfCode,
-            'Subsystem': pe.OPTIONAL_HEADER.Subsystem,
-            'num_sections': len(pe.sections),
-            'num_dlls': len(pe.DIRECTORY_ENTRY_IMPORT) if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT') else 0,
-            'num_functions': sum(len(entry.imports) for entry in pe.DIRECTORY_ENTRY_IMPORT) if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT') else 0,
-        }
-
-        # 모델 데이터가 정상적으로 로드되었는지 확인 후 컬럼 추출
-        if not self.file_model_data:
-            raise ValueError("파일 분석 모델 데이터가 없습니다.")
-
-        # ML 팀에서 정의한 컬럼 리스트
-        cols = self.file_model_data['columns']
-        # 'Entropy'를 제외한 특징들을 먼저 맵핑
-        features = {col: feature_map.get(col, 0) for col in cols if col != 'Entropy'}
-        
-        # 엔트로피 추가
-        with open(file_path, 'rb') as f:
-            features['Entropy'] = self._get_entropy(f.read())
-        
-        pe.close()
-        return features
-
-    def analyze_file(self, path):
-        '''파일 악성 여부 분석'''
+    def analyze_url(self, url: str) -> dict:
+        """전문 모듈인 url.py로 분석 위임"""
         try:
-            if not self.file_model_data: return {'error': 'File model not loaded'}
-            
-            features = self._extract_file_features(path)
-            df = pd.DataFrame([features])
-            
-            # 전처리 및 추론 (모델 데이터 딕셔너리에서 추출)
-            cols = self.file_model_data['columns']
-            scaler = self.file_model_data['scaler']
-            model = self.file_model_data['model']
-
-            # 전처리
-            for col in ['Size_of_Image', 'Size_of_Code']:
-                if col in df.columns: 
-                    df[col] = np.log1p(df[col])
-
-            # 추론  
-            features_scaled = scaler.transform(df[cols])
-            prob = model.predict_proba(features_scaled)[:, 1][0]
-            
-            return {
-                'module': 'File_Analyzer',
-                'is_malicious': 1 if prob > 0.4 else 0,
-                'confidence_score': float(round(prob, 4)),
-                'detected_features': [
-                    f"Entropy: {round(features['Entropy'], 2)}", 
-                    f"Sections: {features['num_sections']}"
-                ]
-            }
-        
+            return url_inference(url)
         except Exception as e:
-            return {'module': 'File_Analyzer', 'error': str(e), 'is_malicious': 0}
+            return {"module": "URL_Analyzer", "error": str(e)}
 
-    def analyze_url(self, url):
-        '''URL 악성 여부 분석'''
-        if not self.url_model_data:
-            return {'module': 'URL_Analyzer', 'error': 'Model not loaded', 'is_malicious': 0}
-        
-        # 임시 특징 추출
-        return {
-            'module': 'URL_Analyzer',
-            'is_malicious': 0,
-            'confidence_score': 0.45,
-            'detected_features': [
-                f"Length: {len(url)}", 
-                f"Dots: {url.count('.')}" # 따옴표 충돌 방지
-            ]
-        }
+    def analyze_file(self, path: str) -> dict:
+        """전문 모듈인 mal.py로 분석 위임"""
+        try:
+            return file_inference(path)
+        except Exception as e:
+            return {"module": "File_Analyzer", "error": str(e)}
 
-    def analyze_email(self, text):
-        '''이메일 본문 분석'''
-        if not self.spam_model_data: 
-            return {'module': 'Email_Analyzer', 'error': 'Model not loaded', 'is_malicious': 0}
-        
-        return {
-            'module': 'Email_Analyzer',
-            'is_malicious': 1,
-            'confidence_score': 0.88,
-            'detected_features': ['Suspicious keywords detected']
-        }
+    def analyze_email(self, text: str, attachments: list = None) -> dict:
+        """전문 모듈인 mail.py로 분석 위임"""
+        try:
+            return email_inference(text, attachments)
+        except Exception as e:
+            return {"module": "Email_Analyzer", "error": str(e)}
