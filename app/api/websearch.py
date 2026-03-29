@@ -1,7 +1,7 @@
 # app/api/websearch.py
 
 from fastapi import APIRouter
-import requests
+import asyncio
 import os
 from dotenv import load_dotenv
 

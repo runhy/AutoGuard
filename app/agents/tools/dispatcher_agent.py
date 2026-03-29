@@ -1,6 +1,5 @@
 # tools/dispatcher_agent.py
 # Dispatcher Agent - 사용자 요청을 분석하여 적절한 도구를 호출하고 최종 리포트를 생성합니다.
-
 import os
 import sys
 import json
@@ -9,6 +8,7 @@ import logging
 # [수정] 비동기 방식의 AsyncOpenAI 임포트
 from openai import AsyncOpenAI 
 from dotenv import load_dotenv
+
 
 # ----------------------------------------------------------
 # [수정] 경로 설정 및 모듈 임포트 최적화
@@ -23,15 +23,17 @@ if project_root not in sys.path:
 # .env 로드
 load_dotenv(os.path.join(project_root, '.env'))
 
-# [수정] 모듈 임포트: 실행 환경에 구애받지 않도록 시도
-try:
-    from app.agents.tools.intel_agent import IntelAgent
-except ImportError:
-    try:
-        from intel_agent import IntelAgent
-    except ImportError:
-        from agents.tools.intel_agent import IntelAgent
-# [추가] 모듈 임포트
+# # [수정] 모듈 임포트: 실행 환경에 구애받지 않도록 시도
+# try:
+#     from app.agents.tools.intel_agent import IntelAgent
+# except ImportError:
+#     try:
+#         from intel_agent import IntelAgent
+#     except ImportError:
+#         from agents.tools.intel_agent import IntelAgent
+
+# 에이전트 임포트
+from app.agents.tools.intel_agent import IntelAgent
 from app.agents.tools.analyzer_agent import AnalyzerAgent
 
 
@@ -216,11 +218,13 @@ class AutoGuardAgent:
 if __name__ == '__main__':
     async def main():
         # IntelAgent 초기화 (내부에서 환경변수 사용하므로 경로 확인 필수)
+        print("[!] 프로그램을 시작합니다...") # 이 메시지가 뜨는지 확인!
         intel = IntelAgent()
         agent = AutoGuardAgent(intel_agent=intel)
+        print("[!] OpenAI Assistant 생성 중... (잠시만 기다려주세요)")
         await agent.create_inspector()
 
         test_query = "이 파일 해시 분석해줘: 275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
         response = await agent.run_agent(test_query)
         print(f"\n[최종 분석 결과]\n{response}")
-        asyncio.run(main())
+    asyncio.run(main())

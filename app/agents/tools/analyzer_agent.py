@@ -7,20 +7,40 @@ import math
 import os
 import re
 import json
+import sys
 from collections import Counter
 from scipy.sparse import hstack # 스팸 분석용 추가
+
+# [필수] 프로젝트 루트를 경로에 추가 (url 모듈을 찾기 위함)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '../../../'))
+scripts_path = os.path.join(project_root, 'ml', 'scripts') # ml/scripts 경로
+# [수정] project_root -> scripts_path
+if scripts_path not in sys.path:
+    sys.path.insert(0, scripts_path)
+    
+# url.py 모듈 임포트
+try:
+    from url import analyze_url as url_inference
+    print("[*] URL 분석 모듈 임포트 성공")  # 디버깅용
+except ImportError:
+    # 혹시라도 실패할 경우를 대비한 경로 재확인 로그
+    print(f"[!] 경로 확인 실패: {scripts_path}")    # 디버깅용
+    raise
+
 
 class AnalyzerAgent:
     def __init__(self):
         '''3가지 모델을 로드합니다. 변수명을 메서드와 일치시켰습니다.'''
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        base_path = os.path.abspath(os.path.join(current_dir, '../../ml/models'))
+        base_path = os.path.abspath(os.path.join(current_dir, '../../../ml/models'))
         
-        # [수정] 변수명을 analyze_email에서 사용하는 'spam_bundle'로 통일
+        # print(f"[*] 모델 탐색 경로: {base_path}") # 디버깅용 출력
+
+        # [수정] URL 모델은 url.py가 내부적으로 로드하므로 여기선 파일과 스팸만 로드
         self.file_model_data = self._load_pickle(os.path.join(base_path, 'malware_model.pkl'))
-        self.url_model_data = self._load_pickle(os.path.join(base_path, 'url_model.pkl'))
-        self.spam_bundle = self._load_pickle(os.path.join(base_path, 'spam_v3.pkl'))
-        
+        # [임시 수정] 에러 발생 : self.spam_bundle = self._load_pickle(os.path.join(base_path, 'spam_V3.pkl'))
+        self.spam_bundle = None
+
     def _load_pickle(self, path):
         if not os.path.exists(path):
             print(f'[!] 경고: 모델 파일을 찾을 수 없습니다 -> {path}')
@@ -134,13 +154,10 @@ class AnalyzerAgent:
         except Exception as e:
             return {'module': 'File_Analyzer', 'error': str(e)}
 
-    # --- https://www.edu2080.co.kr/lms/class/bbs/board.php?bo_table=cl_pds&c=lecture_main ---
     def analyze_url(self, url):
-        '''URL 모델은 현재 뼈대만 존재합니다.'''
-        if not self.url_model_data: return {'module': 'URL_Analyzer', 'error': 'Model not loaded'}
-        return {
-            'module': 'URL_Analyzer',
-            'is_malicious': 0,
-            'confidence_score': 0.45,
-            'detected_features': [f"Length: {len(url)}", f"Dots: {url.count('.')}"]
-        }
+        '''전문 모듈인 url.py로 분석 전적 위임'''
+        try:
+            # JSON 규격 그대로 리턴
+            return url_inference(url)
+        except Exception as e:
+            return {"module": "URL_Analyzer", "error": str(e)}
