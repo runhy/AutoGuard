@@ -1,38 +1,41 @@
 # app/api/main.py
+# FastAPI 서버의 진입점입니다. 에이전트 시스템과 API 라우터를 초기화하고 관리합니다.
 
-# 원본 코드 : 기본적인 기능(에이전트 초기화, 채팅 API)
-# -> url.py, mal.py, mail.py를 전문 엔진으로 독립 
-# -> 이를 완벽 수용 + 시연 효율 높이기 위해 수정
-
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from app.api import safebrowsing, virustotal, websearch, analyze, file_scan
 import os
 import logging
 import sys
+import shutil
+import tempfile
+import time
+import hashlib  # [추가] 파일 해시값(SHA-256) 추출을 위한 모듈
 from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 
-# 에이전트 모듈 임포트 (경로 설정 포함)
+# [경로 설정] 프로젝트 루트를 path에 추가하여 app 모듈 인식
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app.api import safebrowsing, virustotal, websearch, analyze, file_scan
 from app.agents.tools.dispatcher_agent import AutoGuardAgent
 from app.agents.tools.intel_agent import IntelAgent
 
-# [수정] 로깅 설정 - 운영 가시성 확보
+# [로깅 설정] 운영 가시성 확보
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("AutoGuard-Main")
 
-# API 키 체크
+# [환경변수 체크] 필수 API 키 확인
 if not os.getenv("VIRUSTOTAL_API_KEY"):
-    raise RuntimeError("❌ VIRUSTOTAL_API_KEY 설정 필요")
+    logger.warning("⚠️ VIRUSTOTAL_API_KEY가 설정되지 않았습니다.")
 if not os.getenv("OPENAI_API_KEY"):
-    raise RuntimeError("❌ OPENAI_API_KEY 설정 필요")
+    raise RuntimeError("❌ OPENAI_API_KEY 설정이 필수적입니다. .env를 확인하세요.")
 
 app = FastAPI(
     title="AutoGuard API", 
     description="LLM 및 전문 ML 엔진 기반 보안 분석 자동화 시스템",
-    version="1.1.0"
+    version="1.2.5"
 )
 
+# CORS 설정 (프론트엔드 연동용)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -46,50 +49,110 @@ dispatcher = None
 
 @app.on_event("startup")
 async def startup_event():
+    """서버 시작 시 에이전트 엔진을 미리 로드합니다."""
     global intel_engine, dispatcher
     try:
         logger.info("[*] 에이전트 시스템 가동 중...")
-        # 1. 인텔 엔진(도구함) 생성
         intel_engine = IntelAgent()
-        # 2. 디스패처(두뇌) 생성 및 도구 연결
         dispatcher = AutoGuardAgent(intel_agent=intel_engine)
-        # 3. OpenAI Assistant 생성/연결
         await dispatcher.create_inspector()
-        logger.info("[*] 에이전트 엔진 준비 완료!")
+        logger.info("[*] 에이전트 엔진(AutoGuard Dispatcher) 준비 완료!")
     except Exception as e:
         logger.error(f"[-] 에이전트 초기화 실패: {e}")
 
+# ====== [API 요청 모델] ======
 class ChatRequest(BaseModel):
     message: str
 
+# ====== [엔드포인트: 일반 채팅 분석] ======
 @app.post("/agent/chat", tags=["Agent"])
 async def agent_chat(request: ChatRequest):
-    """
-    사용자의 자연어 질문을 받아 에이전트가 분석 후 답변을 반환합니다.
-    예: "이 해시 분석해줘: 275a02..."
-    """
+    """자연어 질문을 분석하여 리포트를 반환합니다."""
     if not dispatcher:
         raise HTTPException(status_code=503, detail="에이전트 엔진이 아직 준비되지 않았습니다.")
-        
     try:
         logger.info(f"[CHAT REQUEST] {request.message}")
-        # 에이전트 실행 (이 과정에서 도구 호출, 서버 내부 통신이 모두 일어남)
         response = await dispatcher.run_agent(request.message)
         return {"status": "success", "reply": response}
     except Exception as e:
         logger.error(f"[-] 에이전트 처리 오류: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ====== [기존 라우터 등록] ======
-# app.include_router(virustotal.router, prefix="/virustotal", tags=["virustotal"], include_in_schema=False)
-# app.include_router(safebrowsing.router, prefix="/safebrowsing", tags=["safebrowsing"], include_in_schema=False)
-# app.include_router(websearch.router, prefix="/websearch", tags=["websearch"], include_in_schema=False)
-# app.include_router(file_scan.router, prefix="/file", tags=["File"], include_in_schema=False)
-# app.include_router(analyze.router, prefix="/analyze", tags=["Analyze"], include_in_schema=False)
+# ====== [엔드포인트: 실물 파일 업로드 분석] ======
+@app.post("/agent/file-analysis", tags=["Agent"])
+async def analyze_file_upload(file: UploadFile = File(...)):
+    """
+    [업그레이드] 실물 파일 저장 -> SHA-256 해시 추출 -> 에이전트 분석(ML + Intel) -> 자동 삭제
+    윈도우 환경의 파일 잠금(WinError 32)을 완벽히 방어합니다.
+    """
+    if not dispatcher:
+        raise HTTPException(status_code=503, detail="에이전트 엔진이 준비되지 않았습니다.")
 
+    # 1. 임시 파일 경로 설정 (윈도우 호환성을 위해 NamedTemporaryFile 사용)
+    extension = os.path.splitext(file.filename)[1]
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=extension)
+    tmp_path = tmp.name
+    
+    try:
+        # 2. 파일 내용 읽기 및 해시값 추출
+        content = await file.read()
+        
+        # [추가] SHA-256 해시 계산 (에이전트에게 힌트로 제공)
+        sha256_hash = hashlib.sha256(content).hexdigest()
+        
+        # 3. 임시 파일에 쓰기 및 즉시 닫기
+        # [핵심] 윈도우에서는 파일을 닫아야(close) 에이전트의 ML 도구가 파일을 읽을 수 있음
+        tmp.write(content)
+        tmp.close() 
+        
+        logger.info(f"[*] 업로드 완료: {file.filename} | Hash: {sha256_hash} | Path: {tmp_path}")
 
-# [수정] include_in_schema=True(기본값)로 변경: Swagger 문서(/docs)에서 테스트 가능하게 함
-# [수정] tags를 대문자/공식 명칭으로 변경하여 시각적 전문성 확보
+        # 4. 디스패처 분석 수행 (해시값과 경로를 함께 전달)
+        # 에이전트가 "해시를 모른다"거나 "접근이 안 된다"는 변명을 못 하도록 명확히 지시
+        query = (
+            f"파일명: {file.filename}\n"
+            f"경로: {tmp_path}\n"
+            f"해시: {sha256_hash}\n\n"
+            f"명령: 외부 검색 결과와 상관없이, **반드시 먼저 'predict_file_malicious' 도구를 실행**하여 "
+            f"파일의 엔트로피와 PE 구조 피처 데이터를 직접 추출하라. "
+            f"추출된 모델 데이터(확률값 등)를 리포트 상단에 배치하고, 그 다음 외부 인텔리전스와 비교하라."
+        )
+        
+        response = await dispatcher.run_agent(query)
+        
+        # 분석 결과 리턴 데이터 구성
+        return_data = {
+            "status": "success",
+            "filename": file.filename,
+            "hash": sha256_hash,
+            "report": response
+        }
+
+    except Exception as e:
+        logger.error(f"[-] 파일 분석 프로세스 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"분석 중 오류 발생: {str(e)}")
+    
+    finally:
+        # 5. [방어적 파일 삭제] 윈도우의 지연 잠금 해제 대응 재시도 로직
+        def safe_delete(path):
+            # 최대 5번, 1초 간격으로 삭제 시도 (ML 엔진의 핸들 해제 대기)
+            for i in range(5):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                        logger.info(f"[*] 임시 파일 삭제 성공: {path}")
+                    return
+                except PermissionError:
+                    logger.warning(f"[!] 파일 사용 중... {i+1}차 삭제 재시도 대기 (1s)")
+                    time.sleep(1)
+            logger.error(f"[!!] 파일 자동 삭제 실패: {path}. 수동 삭제가 필요합니다.")
+
+        # 분석 응답과는 별개로 삭제 시도
+        safe_delete(tmp_path)
+    
+    return return_data
+
+# ====== [라우터 등록] ======
 app.include_router(virustotal.router, prefix="/virustotal", tags=["VirusTotal"])
 app.include_router(safebrowsing.router, prefix="/safebrowsing", tags=["SafeBrowsing"])
 app.include_router(websearch.router, prefix="/websearch", tags=["WebSearch"])
@@ -98,4 +161,4 @@ app.include_router(analyze.router, prefix="/analyze", tags=["Analyze"])
 
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "AutoGuard API 실행 중"}
+    return {"status": "ok", "message": "AutoGuard API Server is Running"}
