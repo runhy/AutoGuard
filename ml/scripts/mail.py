@@ -1,24 +1,40 @@
+# ml/scripts/mail.py
+# 메일 본문의 텍스트 패턴과 스팸 특징을 분석
+
 import re
 import html
 import joblib
 import numpy as np
 import pandas as pd
+import sys
+import __main__
 from pathlib import Path
 from scipy.sparse import hstack, csr_matrix
 
-# 모델 로드
-_MODEL_PATH = Path(__file__).parent.parent / "models" / "spam_V3.pkl"
-data = joblib.load(_MODEL_PATH)
+# [추가] 설계도 : 문자의 복잡도를 계산 (스팸 메일은 보통 엔트로피가 높음)
+def _char_entropy(s):
+    if not s: return 0.0
+    freq = pd.Series(list(s)).value_counts(normalize=True)
+    return float(-(freq * np.log2(freq + 1e-10)).sum())
+# 설계도들을 __main__에 주입 (Pickle/Joblib 참조 에러 방지)
+__main__._char_entropy = _char_entropy
 
-model   = data["model"]
-tfidf   = data["tfidf"]
-scaler  = data["scaler"]
-columns = data["v3_cols"]
+# 모델 로드 (경로를 파일 위치 기준으로 절대 경로화)
+_MODEL_PATH = Path(__file__).parent.parent / "models" / "spam_V3.pkl"
+
+# 에러 방지
+try:
+    data = joblib.load(_MODEL_PATH)
+    model   = data["model"]
+    tfidf   = data["tfidf"]
+    scaler  = data["scaler"]
+    columns = data["v3_cols"]
+except Exception as e:
+    print(f"[!] Email 모델 로드 실패 : {e}")
 
 
 #  메일 본문 정제
 def clean_text(raw: str) -> str:
-
     #원본 메일 본문 → 순수 텍스트 반환
 
     #처리 순서
@@ -30,17 +46,18 @@ def clean_text(raw: str) -> str:
     # 6. 연속 공백·탭 → 단일 공백 / 3줄 이상 줄바꿈 → 2줄
     # 7. 앞뒤 공백 제거
 
-    if not raw:
-        return ""
-
+    if not raw: return ""
+    # HTML 엔티티 디코딩 및 태그 제거
     text = html.unescape(raw)
     text = re.sub(r'<(style|script)[^>]*>.*?</\1>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'<[^>]+>', ' ', text)
+    # 메일 헤더 패턴 제거(학습 데이터와 일관성 유지)
     text = re.sub(
         r'^(From|To|Cc|Bcc|Subject|Date|Message-ID|Content-Type'
         r'|Content-Transfer-Encoding|Reply-To|Received|X-[\w-]+)\s*:.*$',
         '', text, flags=re.MULTILINE | re.IGNORECASE
     )
+    # 노이즈 제거 및 공백 정리
     text = re.sub(r'[A-Za-z0-9+/=]{40,}', '', text)
     text = re.sub(r'[ \t]+', ' ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
@@ -100,6 +117,7 @@ _FILE_EXTS = re.compile(
     re.IGNORECASE,
 )
 
+# [통합 인터페이스] 서버와 에이전트가 호출하는 최종 함수
 def analyze_mail(raw_text: str, attachments: list = None) -> dict:
     if attachments is None:
         attachments = []
@@ -111,7 +129,6 @@ def analyze_mail(raw_text: str, attachments: list = None) -> dict:
 
     # 2. 본문 정제
     clean_txt = clean_text(raw_text)
-
     # 3. 추론
     pred, prob, feature = predict_mail(clean_txt)
 
@@ -146,6 +163,7 @@ def analyze_mail(raw_text: str, attachments: list = None) -> dict:
         detected.append("특이 패턴 없음 - 정상 텍스트로 판단" if prob < 0.5
                         else "텍스트 패턴 기반 악성 의심")
 
+    # 결과 반환
     result_json = {
         # 분석 모듈 식별자
         "module":              "Email_Analyzer",
