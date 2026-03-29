@@ -8,7 +8,7 @@ from app.api.virustotal import scan_url as vt_scan        # virustotal 함수 �
 from app.api.safebrowsing import scan_url as sb_scan      # safebrowsing 함수 가져오기
 from app.api.file_scan import scan_file as file_scan
 # [추가] 수정한 자체 ML 엔진
-from app.ml.scripts.url import analyze_url as internal_url_inference
+from ml.scripts.url import analyze_url as internal_url_inference
 from app.agents.tools.analyzer_agent import AnalyzerAgent
 
 
