@@ -624,9 +624,15 @@ def mock_fastapi_request(_user_input: str = "", analysis_type: str = "URL") -> d
         reply = data.get("reply", "분석 완료")
 
         # ✅ 에이전트 응답 텍스트에서 위험도 판단
-        malicious_keywords = ["악성", "위험", "피싱", "스팸", "의심", "차단", "phishing", "malicious"]
+        malicious_keywords = [
+            "악성으로 판단", "악성 이메일", "악성으로 분류",
+            "피싱으로 판단", "피싱 이메일", "피싱으로 분류",
+            "스팸으로 분류", "즉시 삭제", "접근을 차단",
+            "phishing detected", "malicious detected"
+        ]
         is_malicious = 1 if any(kw in reply for kw in malicious_keywords) else 0
-        confidence_score = 75.0 if is_malicious else 10.0
+        score_match = re.search(r'\[위험도 점수\].*?(\d+)/100', reply)
+        confidence_score = float(score_match.group(1)) if score_match else (75.0 if is_malicious else 10.0)
 
         return {
             "status": "success",
