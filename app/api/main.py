@@ -18,6 +18,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.api import safebrowsing, virustotal, websearch, analyze, file_scan
 from app.agents.tools.dispatcher_agent import AutoGuardAgent
 from app.agents.tools.intel_agent import IntelAgent
+from app.agents.tools.advisor_agent import AdvisorAgent  # ✅ [추가] RAG 요약용
 
 # [로깅 설정] 운영 가시성 확보
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -64,6 +65,11 @@ async def startup_event():
 class ChatRequest(BaseModel):
     message: str
 
+# ✅ [추가] RAG 요약 요청 모델
+class RagSummarizeRequest(BaseModel):
+    chunks: list[str]               # 벡터 DB에서 검색된 청크 텍스트 목록
+    threat_type: str = "보안 위협"   # 분석 유형 (URL / Email / File 등)
+
 # ====== [엔드포인트: 일반 채팅 분석] ======
 @app.post("/agent/chat", tags=["Agent"])
 async def agent_chat(request: ChatRequest):
@@ -97,18 +103,17 @@ async def analyze_file_upload(file: UploadFile = File(...)):
         # 2. 파일 내용 읽기 및 해시값 추출
         content = await file.read()
         
-        # [추가] SHA-256 해시 계산 (에이전트에게 힌트로 제공)
+        # SHA-256 해시 계산 (에이전트에게 힌트로 제공)
         sha256_hash = hashlib.sha256(content).hexdigest()
         
         # 3. 임시 파일에 쓰기 및 즉시 닫기
-        # [핵심] 윈도우에서는 파일을 닫아야(close) 에이전트의 ML 도구가 파일을 읽을 수 있음
+        # 윈도우에서는 파일을 닫아야(close) 에이전트의 ML 도구가 파일을 읽을 수 있음
         tmp.write(content)
         tmp.close() 
         
         logger.info(f"[*] 업로드 완료: {file.filename} | Hash: {sha256_hash} | Path: {tmp_path}")
 
         # 4. 디스패처 분석 수행 (해시값과 경로를 함께 전달)
-        # 에이전트가 "해시를 모른다"거나 "접근이 안 된다"는 변명을 못 하도록 명확히 지시
         query = (
             f"파일명: {file.filename}\n"
             f"경로: {tmp_path}\n"
@@ -120,7 +125,6 @@ async def analyze_file_upload(file: UploadFile = File(...)):
         
         response = await dispatcher.run_agent(query)
         
-        # 분석 결과 리턴 데이터 구성
         return_data = {
             "status": "success",
             "filename": file.filename,
@@ -133,9 +137,8 @@ async def analyze_file_upload(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"분석 중 오류 발생: {str(e)}")
     
     finally:
-        # 5. [방어적 파일 삭제] 윈도우의 지연 잠금 해제 대응 재시도 로직
+        # 5. 윈도우의 지연 잠금 해제 대응 재시도 삭제 로직
         def safe_delete(path):
-            # 최대 5번, 1초 간격으로 삭제 시도 (ML 엔진의 핸들 해제 대기)
             for i in range(5):
                 try:
                     if os.path.exists(path):
@@ -147,10 +150,26 @@ async def analyze_file_upload(file: UploadFile = File(...)):
                     time.sleep(1)
             logger.error(f"[!!] 파일 자동 삭제 실패: {path}. 수동 삭제가 필요합니다.")
 
-        # 분석 응답과는 별개로 삭제 시도
         safe_delete(tmp_path)
     
     return return_data
+
+# ✅ [추가] RAG 요약 엔드포인트
+@app.post("/rag/summarize", tags=["RAG"])
+async def summarize_rag(req: RagSummarizeRequest):
+    """
+    벡터 DB에서 검색된 파편화된 PDF 청크들을
+    AdvisorAgent.summarize_rag_chunks()를 통해
+    자연스러운 KISA 보안 권고문으로 재가공하여 반환합니다.
+    """
+    try:
+        logger.info(f"[RAG SUMMARIZE] 위협 유형: {req.threat_type} | 청크 수: {len(req.chunks)}")
+        advisor = AdvisorAgent()
+        summary = await advisor.summarize_rag_chunks(req.chunks, req.threat_type)
+        return {"summary": summary}
+    except Exception as e:
+        logger.error(f"[-] RAG 요약 실패: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ====== [라우터 등록] ======
 app.include_router(virustotal.router, prefix="/virustotal", tags=["VirusTotal"])
