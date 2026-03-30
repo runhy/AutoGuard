@@ -1,10 +1,12 @@
 # tools/intel_agent.py
 
+import os
 import httpx
 import logging
 import json
+from tavily import TavilyClient  # [추가] Tavily 클라이언트 임포트
 
-# 로깅 설정 (콘솔에서 분석 흐름 확인용)
+# 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -14,43 +16,42 @@ FASTAPI_URL = "http://127.0.0.1:8000"
 class IntelAgent:
     def __init__(self):
         self.name = "AutoGuard Intel Engine"
+        # [추가] Tavily 클라이언트 초기화
+        api_key = os.getenv("TAVILY_API_KEY")
+        if api_key:
+            self.tavily = TavilyClient(api_key=api_key)
+        else:
+            self.tavily = None
+            logger.warning("[!] TAVILY_API_KEY가 설정되지 않았습니다.")
 
     async def search_web(self, query: str) -> dict:
         """
-        [URL 분석] 에이전트가 호출하면 FastAPI의 /analyze/scan 엔드포인트를 찌릅니다.
-        (VirusTotal + SafeBrowsing 통합 결과 반환)
+        [진짜 웹 서치] Tavily AI를 사용하여 최신 보안 위협 정보를 검색합니다.
         """
-        logger.info(f"[*] URL 분석 요청: {query}")
+        if not self.tavily:
+            return {"error": "Tavily API key is missing."}
+
+        logger.info(f"[*] Tavily 웹 검색 요청: {query}")
         
         try:
-            # 타임아웃 40초 (VT 스캔 대기 시간 고려)
-            async with httpx.AsyncClient(timeout=40.0) as client:
-                response = await client.get(
-                    f"{FASTAPI_URL}/analyze/scan",
-                    params={"url": query}
-                )
-                response.raise_for_status() # 200 아니면 에러 발생
-                
-                result = response.json()
-                logger.info(f"[+] 분석 완료: {query} | 결과: {result.get('is_malicious')}")
-                return result
-        
-        except httpx.TimeoutException:
-            logger.error(f"[-] 분석 타임아웃: {query}")
-            return {
-                "module": "Intel_Agent",
-                "is_malicious": 0,
-                "confidence_score": 0.0,
-                "detected_features": ["분석 서버 응답 지연(Timeout)"]
-            }
+            # [수정] 기존 FastAPI 호출 대신 Tavily API 사용
+            # search_depth="smart"는 더 정밀한 검색을 수행합니다.
+            response = self.tavily.search(
+                query=query, 
+                search_depth="advanced", # 'basic'보다 더 깊은 분석을 수행합니다.
+                max_results=5
+            )
+            
+            logger.info(f"[+] 검색 완료: {query} (결과 {len(response.get('results', []))}건)")
+            return response # 에이전트가 읽을 수 있도록 검색 결과 리스트 반환
+            
         except Exception as e:
-            logger.error(f"[-] 분석 중 오류 발생: {e}")
+            logger.error(f"[-] Tavily 검색 중 오류 발생: {e}")
             return {"error": str(e)}
 
+    # predict_file_malicious 함수는 그대로 두시면 됩니다. (해시 분석용)
     async def predict_file_malicious(self, file_hash: str) -> dict:
-        """
-        [파일 해시 분석] SHA-256 해시값을 기반으로 FastAPI 서버에 조회를 요청합니다.
-        """
+        """ [파일 해시 분석] 기존 로직 유지 """
         logger.info(f"[*] 파일 해시 분석 요청: {file_hash}")
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -59,13 +60,31 @@ class IntelAgent:
                     params={"hash": file_hash}
                 )
                 response.raise_for_status()
-                
-                result = response.json()
-                is_malicious = result.get('is_malicious', 'unknown')
-                logger.info(f"[+] 해시 분석 완료: {file_hash} | 결과: {is_malicious}")
-                
-                return result
-            
+                return response.json()
         except Exception as e:
             logger.error(f"[!] 파일 분석 중 오류 발생: {e}")
             return {"error": str(e)}
+        
+        
+# 웹 서치 기능을 테스트하기 위한 간단한 실행 코드
+if __name__ == "__main__":
+    import asyncio
+    from dotenv import load_dotenv
+    
+    # .env 파일 로드 (TAVILY_API_KEY가 들어있어야 함)
+    load_dotenv()
+
+    async def test():
+        intel = IntelAgent()
+        print("\n[*] Tavily 웹 검색 테스트 시작...")
+        # 테스트 질문: 최근 보안 뉴스 검색
+        result = await intel.search_web("2026 current cyber security threats ransomware")
+        
+        if "error" in result:
+            print(f"[-] 테스트 실패: {result['error']}")
+        else:
+            print(f"[+] 테스트 성공! 검색 결과 {len(result.get('results', []))}건 발견")
+            for i, res in enumerate(result.get('results', []), 1):
+                print(f"  {i}. {res.get('title')} ({res.get('url')})")
+
+    asyncio.run(test())

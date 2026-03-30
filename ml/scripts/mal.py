@@ -3,6 +3,8 @@
 # [수정 사항] pickle 로드 시 발생하는 AttributeError 방지 및 경로 유연성 확보
 # [수정 사항] 테스트 환경 오류 발생 KeyError 발생
 
+import pefile
+import os
 import pandas as pd
 import numpy as np
 import pefile
@@ -94,7 +96,7 @@ def extract_file_feature(fileName, columns):
             except Exception as e:
                 file_feature[col] = 0
             # print(f"[warn] {col}: {e}")  # 디버깅 시 주석 해제
-        pe.close()
+        # pe.close()
         return file_feature
     except: return {col: 0 for col in columns}
 
@@ -142,7 +144,15 @@ def predict_file(feature, model, upper, columns, threshold):
 
 # [통합 인터페이스] 서버 + 에이전트가 사용하는 최종 분석 함수
 def analyze_file(path):
+    pe = None
     try:
+        # 파일 존재 여부 확인
+        if not os.path.exists(path):
+            return {"error": "파일을 찾을 수 없습니다."}
+        
+        # PE 파일 로드
+        pe = pefile.PE(path)
+        
         file_feature = extract_file_feature(path, columns)
         file_feature["Entropy"] = get_entropy(path)
         pred, prob = predict_file(file_feature, model, upper, columns, THRESHOLD)
@@ -162,4 +172,11 @@ def analyze_file(path):
         return result_json
     except Exception as e:
         return {"module": "File_Analyzer", "error": f"분석 중 오류: {str(e)}"}
+    
+    finally:
+        # [핵심] 윈도우에서 파일 잠금을 해제하기 위해 반드시 close() 호출
+        if pe is not None:
+            pe.close()
+            print(f"[*] PE 파일 핸들 닫기 완료: {path}")
+            
 #analyze_file("/content/drive/MyDrive/sample_mal/Win32.Wannacry.exe")

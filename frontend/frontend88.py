@@ -14,6 +14,9 @@ import json
 import datetime
 from collections import defaultdict
 
+# 외부 라이브러리 임포트 시도 (선택적 기능)
+import requests as req
+
 import PyPDF2
 import numpy as np
 
@@ -517,142 +520,148 @@ def generate_pdf_report(user_input, analysis_type, result, rag_results) -> bytes
 
 
 def mock_fastapi_request(_user_input: str = "", analysis_type: str = "URL") -> dict:
-    time.sleep(0.5)
+    """
+    [수정] Mock 데이터 제거 → 실제 FastAPI 엔드포인트 호출
+    """
+    FASTAPI_URL = "http://127.0.0.1:8000"
 
-    mock_profiles = {
-        "URL": {
-            "ml_result": {
-                "module":            "URL_Analyzer",
-                "is_malicious":      True,
-                "confidence_score":  92.5,
-                "detected_features": ["URL 길이 과다", "의심 도메인", "리다이렉트 다수"],
-            },
-            "vt_result": {"detection_ratio": "15/90", "malicious_count": 15, "harmless_count": 75},
-            "ai_agent_report": {
-                "summary": (
-                    "이 URL은 피싱(Phishing) 특성을 보이며, "
-                    "사용자 정보를 탈취하려는 악성 시도로 판단됩니다."
-                ),
-                "steps_to_take": [
-                    "의심스러운 링크를 클릭하지 마세요.",
-                    "즉시 비밀번호를 변경하세요.",
-                    "보안팀에 즉시 보고하세요.",
-                    "해당 URL을 차단 목록에 추가하세요.",
-                ],
-            },
-        },
-        "Email": {
-            "ml_result": {
-                "module":            "Email_Analyzer",
-                "is_malicious":      True,
-                "confidence_score":  78.3,
-                "detected_features": ["발신자 도메인 위조", "긴급 유도 표현", "악성 첨부파일 의심"],
-            },
-            "vt_result": {"detection_ratio": "8/90", "malicious_count": 8, "harmless_count": 82},
-            "ai_agent_report": {
-                "summary": (
-                    "이 이메일은 스피어 피싱 공격으로 판단됩니다. "
-                    "발신자 정보가 위조되었으며, 첨부파일에 악성코드가 포함되어 있을 가능성이 높습니다."
-                ),
-                "steps_to_take": [
-                    "첨부파일을 절대 열지 마세요.",
-                    "이메일 내 링크를 클릭하지 마세요.",
-                    "발신자에게 별도 채널(전화 등)로 진위를 확인하세요.",
-                    "보안팀에 해당 이메일을 신고하세요.",
-                ],
-            },
-        },
-        "File": {
-            "ml_result": {
-                "module":            "File_Analyzer",
-                "is_malicious":      True,
-                "confidence_score":  85.7,
-                "detected_features": ["실행 가능 코드 포함", "난독화 탐지", "의심 API 호출", "자동 실행 등록 시도"],
-            },
-            "vt_result": {"detection_ratio": "22/90", "malicious_count": 22, "harmless_count": 68},
-            "ai_agent_report": {
-                "summary": (
-                    "이 파일은 악성코드(Malware) 특성을 보이며, "
-                    "난독화된 실행 코드와 시스템 레지스트리 조작 시도가 탐지되었습니다."
-                ),
-                "steps_to_take": [
-                    "해당 파일을 절대 실행하지 마세요.",
-                    "파일을 격리(Quarantine) 처리하세요.",
-                    "전체 시스템 바이러스 검사를 수행하세요.",
-                    "보안팀에 파일 샘플을 전달하세요.",
-                ],
-            },
-        },
-    }
+    try:
+        # 파일 분석 (File, Email+File, Email+URL+File)
+        if analysis_type in ("File", "Email+File", "Email+URL+File"):
+            uploaded_file = st.session_state.get("target_file_uploader")
+            if uploaded_file:
+                # ① 에이전트 리포트 (AI 요약)
+                uploaded_file.seek(0)
+                agent_response = req.post(
+                    f"{FASTAPI_URL}/agent/file-analysis",
+                    files={"file": (uploaded_file.name, uploaded_file, "application/octet-stream")},
+                    timeout=120
+                )
+                agent_data = agent_response.json()
 
-    if analysis_type == "Email+File":
-        profile = dict(mock_profiles["Email"])
-        profile["ml_result"] = dict(profile["ml_result"])
-        profile["ml_result"]["detected_features"] = [
-            "발신자 도메인 위조", "긴급 유도 표현",
-            "첨부파일 악성코드 포함", "난독화 실행코드 탐지",
+                # ② VirusTotal 실제 점수
+                uploaded_file.seek(0)
+                scan_response = req.post(
+                    f"{FASTAPI_URL}/file/scan",
+                    files={"file": (uploaded_file.name, uploaded_file, "application/octet-stream")},
+                    timeout=60
+                )
+                scan_data = scan_response.json()
+
+                report_text = agent_data.get("report", "분석 결과 없음")
+                is_malicious = scan_data.get("is_malicious", 0)
+                confidence_score = float(scan_data.get("confidence_score", 0.0)) * 100
+                file_hash = scan_data.get("file_hash", "")
+
+                return {
+                    "status": "success",
+                    "ml_result": {
+                        "module": "File_Analyzer",
+                        "is_malicious": is_malicious,
+                        "confidence_score": round(confidence_score, 1),
+                        "detected_features": scan_data.get("detected_features", []) + [
+                            f"SHA256: {file_hash[:20]}..." if file_hash else f"파일명: {uploaded_file.name}"
+                        ]
+                    },
+                    "vt_result": {
+                        "detection_ratio": "VirusTotal",
+                        "malicious_count": 0,
+                        "harmless_count": 0
+                    },
+                    "ai_agent_report": {
+                        "summary": report_text,
+                        "steps_to_take": ["보안팀에 문의하세요.", "파일을 격리하세요."]
+                    }
+                }
+            else:
+                # ✅ 파일이 None일 때 fallthrough 방지
+                st.error("❌ 파일이 업로드되지 않았습니다.")
+                return {}
+
+        # URL 분석
+        if analysis_type == "URL" or re.match(r'https?://', _user_input.strip(), re.IGNORECASE):
+            response = req.get(
+                f"{FASTAPI_URL}/analyze/scan",
+                params={"url": _user_input},
+                timeout=60
+            )
+            data = response.json()
+            is_malicious = data.get("is_malicious", 0)
+            score = round(float(data.get("confidence_score", 0.0)) * 100, 1)
+
+            # VirusTotal score가 0인데 SafeBrowsing이 악성 탐지하면 100으로 설정
+            if is_malicious and score == 0.0:
+                score = 100.0
+            return {
+                "status": "success",
+                "ml_result": {
+                    "module": "URL_Analyzer",
+                    "is_malicious": is_malicious,
+                    "confidence_score": round(score, 1),
+                    "detected_features": data.get("detected_features", [])
+                },
+                "vt_result": {
+                    "detection_ratio": "VirusTotal + SafeBrowsing",
+                    "malicious_count": 0,
+                    "harmless_count": 0
+                },
+                "ai_agent_report": {
+                    "summary": f"{'악성 URL로 탐지됨' if is_malicious else '정상 URL로 판단됨'} (신뢰도: {round(score, 1)}%)",
+                    "steps_to_take": [
+                        "해당 URL 접근을 차단하세요." if is_malicious else "현재 안전한 URL입니다.",
+                        "보안팀에 보고하세요." if is_malicious else "주기적으로 재검사하세요."
+                    ]
+                }
+            }
+
+        # 이메일 / 기타 → /agent/chat 으로 처리
+        response = req.post(
+            f"{FASTAPI_URL}/agent/chat",
+            json={"message": f"{_user_input} 분석해줘"},
+            timeout=120
+        )
+        data = response.json()
+        reply = data.get("reply", "분석 완료")
+
+        # ✅ 에이전트 응답 텍스트에서 위험도 판단
+        malicious_keywords = [
+            "악성으로 판단", "악성 이메일", "악성으로 분류",
+            "피싱으로 판단", "피싱 이메일", "피싱으로 분류",
+            "스팸으로 분류", "즉시 삭제", "접근을 차단",
+            "phishing detected", "malicious detected"
         ]
-        profile["ml_result"]["confidence_score"] = 88.1
-        profile["ai_agent_report"] = {
-            "summary": (
-                "이메일 본문과 첨부파일 모두에서 악성 특성이 탐지되었습니다. "
-                "스피어 피싱 공격으로 판단되며, 첨부파일에 악성코드가 포함되어 있습니다."
-            ),
-            "steps_to_take": [
-                "첨부파일을 절대 열지 마세요.",
-                "이메일을 즉시 격리하세요.",
-                "발신자 진위를 별도 채널로 확인하세요.",
-                "보안팀에 이메일과 파일 샘플을 전달하세요.",
-                "전체 시스템 바이러스 검사를 수행하세요.",
-            ],
-        }
-        return {"status": "success", **profile}
+        is_malicious = 1 if any(kw in reply for kw in malicious_keywords) else 0
+        score_match = re.search(r'\[위험도 점수\].*?(\d+)/100', reply)
+        confidence_score = float(score_match.group(1)) if score_match else (75.0 if is_malicious else 10.0)
 
-    if analysis_type == "Email+URL":
-        profile = dict(mock_profiles["Email"])
-        profile["ml_result"] = dict(profile["ml_result"])
-        profile["ml_result"]["detected_features"] = [
-            "발신자 도메인 위조", "악성 URL 포함", "리다이렉트 감지", "긴급 유도 표현",
-        ]
-        profile["ml_result"]["confidence_score"] = 84.6
-        profile["ai_agent_report"] = {
-            "summary": (
-                "이메일 본문 내 악성 URL이 포함된 피싱 이메일로 판단됩니다. "
-                "링크 클릭 시 사용자 정보가 탈취될 위험이 높습니다."
-            ),
-            "steps_to_take": [
-                "이메일 내 링크를 절대 클릭하지 마세요.",
-                "해당 URL을 차단 목록에 추가하세요.",
-                "발신자 진위를 별도 채널로 확인하세요.",
-                "보안팀에 즉시 신고하세요.",
-            ],
+        return {
+            "status": "success",
+            "ml_result": {
+                "module": "Email_Analyzer",
+                "is_malicious": is_malicious,
+                "confidence_score": confidence_score,
+                "detected_features": ["에이전트 분석 완료"]
+            },
+            "vt_result": {
+                "detection_ratio": "N/A",
+                "malicious_count": 0,
+                "harmless_count": 0
+            },
+            "ai_agent_report": {
+                "summary": reply,
+                "steps_to_take": ["보안팀에 문의하세요."]
+            }
         }
-        return {"status": "success", **profile}
 
-    if analysis_type == "Email+URL+File":
-        profile = dict(mock_profiles["Email"])
-        profile["ml_result"] = dict(profile["ml_result"])
-        profile["ml_result"]["detected_features"] = [
-            "발신자 도메인 위조", "악성 URL 포함", "첨부파일 악성코드", "난독화 탐지", "자동 실행 시도",
-        ]
-        profile["ml_result"]["confidence_score"] = 96.2
-        profile["ai_agent_report"] = {
-            "summary": (
-                "이메일 본문, 악성 URL, 첨부파일 3가지 모두에서 악성 특성이 탐지된 "
-                "고위험 복합 공격입니다. 즉각적인 격리와 대응이 필요합니다."
-            ),
-            "steps_to_take": [
-                "이메일을 즉시 격리하세요.",
-                "첨부파일을 절대 열지 마세요.",
-                "이메일 내 링크를 클릭하지 마세요.",
-                "보안팀에 즉시 신고 및 전체 시스템 검사를 수행하세요.",
-                "해당 발신 도메인을 차단 목록에 추가하세요.",
-            ],
-        }
-        return {"status": "success", **profile}
-
-    profile = mock_profiles.get(analysis_type, mock_profiles["URL"])
-    return {"status": "success", **profile}
+    except req.exceptions.ConnectionError:
+        st.error("❌ FastAPI 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인하세요.")
+        return {}
+    except req.exceptions.Timeout:
+        st.error("❌ 서버 응답 시간 초과 (분석이 오래 걸리고 있습니다).")
+        return {}
+    except Exception as e:
+        st.error(f"❌ 오류 발생: {e}")
+        return {}
 
 
 # ── 페이지 설정 ───────────────────────────────────────────────────────────────
@@ -760,9 +769,10 @@ st.markdown("""
     [data-testid="stFileUploader"] [data-testid="stMarkdownContainer"] small { display: none !important; }
     .stFileUploader small { display: none !important; }
     .uploadedFile small { display: none !important; }
-    /* 텍스트 입력창 기본 스타일 */
+    /* 텍스트 입력창 기본 스타일(흰색 바탕에 흰색 글씨여서 수정함) */
     div[data-testid="stTextArea"] textarea {
         background-color: #ffffff !important;
+        color: #000000 !important;
         border: 1px solid #cbd5e1 !important;
         border-left: 5px solid #3b82f6 !important;
         border-radius: 8px !important;
@@ -812,8 +822,7 @@ st.markdown('<div class="sub-header">URL · 이메일 · 파일을 AI로 즉시 
 
 st.markdown(
     '<div class="mock-warning">'
-    '⚠️ <b>데모 모드</b> : 현재 분석 결과는 Mock(더미) 데이터입니다. '
-    '실제 ML 모델 및 VirusTotal API 연동 후 정확한 분석이 가능합니다.'
+    '✅ <b>실시간 분석 모드</b> : FastAPI 백엔드와 연동되어 실제 분석 결과를 제공합니다.'
     '</div>',
     unsafe_allow_html=True,
 )
@@ -905,6 +914,7 @@ with col_left:
         "분석 대상 파일",
         type=[
             "exe", "dll", "bat", "sh", "py", "js",
+            "com",  # ✅ EICAR 테스트파일 등 .com 확장자 추가
             "pdf", "doc", "docx", "hwp",
             "zip", "rar", "7z", "tar", "gz", "bz2", "xz",
             "cab", "iso",
