@@ -862,7 +862,7 @@ with col_left:
     st.markdown(
         "**파일 업로드** "
         "<span style='color:#888;font-size:0.82rem'>"
-        "(단독 악성파일 분석 또는 이메일 첨부파일로 함께 분석 가능 · 최대 1,000 KB)</span>",
+        "(단독 악성파일 분석 또는 이메일 첨부파일로 함께 분석 가능 · 최대 6,000 KB)</span>",
         unsafe_allow_html=True,
     )
 
@@ -881,8 +881,8 @@ with col_left:
 
     if uploaded_target_file:
         file_kb = uploaded_target_file.size / 1024
-        if file_kb > 1000:
-            st.error(f"❌ 파일 크기 초과: `{file_kb:.1f} KB` (최대 1,000 KB)")
+        if file_kb > 6000:
+            st.error(f"❌ 파일 크기 초과: `{file_kb:.1f} KB` (최대 6000 KB)")
         else:
             if user_input.strip():
                 st.success(
@@ -1054,7 +1054,7 @@ if analyze_clicked:
     st.session_state.input_error = False
 
     if uploaded_target_file is not None:
-        if uploaded_target_file.size > 1000 * 1024:
+        if uploaded_target_file.size > 6000 * 1024:
             st.error(
                 f"❌ 파일 크기 초과: `{uploaded_target_file.size / 1024:.1f} KB` "
                 f"(최대 1,000 KB)\n\n업로드 가능한 파일 크기는 **1,000 KB 이하**입니다."
