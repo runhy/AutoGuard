@@ -33,6 +33,15 @@ def get_entropy(file_path):
 # 현재 실행 주체인 __main__에 설계도를 미리 주입하여 AttributeError를 방지합니다.
 __main__.get_entropy = get_entropy
 
+# PE 파일인지를 판단 -> 에러 방지
+def is_pe(path):
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(2)
+        return magic == b"MZ"
+    except:
+        return False
+
 # 피처 추출
 def extract_file_feature(fileName, columns):
     try:
@@ -142,6 +151,17 @@ def predict_file(feature, model, upper, columns, threshold):
 
 # [통합 인터페이스] 서버 + 에이전트가 사용하는 최종 분석 함수
 def analyze_file(path):
+    if not is_pe(path):
+        result_json = {
+            "module": "File_Analyzer",
+            "is_malicious": 0,
+            "confidence_score": 0,
+            "detected_features": [
+                f"error=지원하는 파일 형식(PE)이 아닙니다"
+            ]
+        }
+        return result_json
+    
     try:
         file_feature = extract_file_feature(path, columns)
         file_feature["Entropy"] = get_entropy(path)
