@@ -1,0 +1,8 @@
+[server]
+# 파일 업로드 최대 크기 설정 (MB 단위)
+# 6,000 KB = 약 6MB
+maxUploadSize = 6
+
+[theme]
+# 라이트 테마 기본값 설정
+base = "light"
