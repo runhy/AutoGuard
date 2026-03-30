@@ -35,6 +35,7 @@ load_dotenv(os.path.join(project_root, '.env'))
 # 에이전트 임포트
 from app.agents.tools.intel_agent import IntelAgent
 from app.agents.tools.analyzer_agent import AnalyzerAgent
+from app.agents.tools.advisor_agent import AdvisorAgent # Advisor 추가
 
 
 # 로깅 설정
@@ -59,6 +60,7 @@ class AutoGuardAgent:
         self.instruction = self._load_instruction()
         self.intel_agent = intel_agent
         self.analyzer = AnalyzerAgent()
+        self.advisor = AdvisorAgent() # Advisor 초기화
 
     def _load_instruction(self):
         ''' prompts/dispatcher.txt 파일을 읽어오는 내부 함수 '''
@@ -100,25 +102,27 @@ class AutoGuardAgent:
         }
 
     def _get_intel_tool_schema(self):
-        # 최신 위협 인텔리전스 정보 조회 도구 스키마
         return {
             'name': 'search_threat_intel',
-            'description': '최신 위협 인텔리전스 정보 조회',
+            # 설명을 더 구체적으로 변경 (2025-2026 최신 정보라는 키워드 포함)
+            'description': '2025년 및 2026년의 실시간 보안 뉴스, 최신 랜섬웨어 트렌드, 새로운 취약점 정보를 인터넷에서 실시간으로 검색할 때 반드시 사용해야 하는 도구입니다. 모델 내부 지식에 없는 최신 위협 정보를 수집합니다.',
             'parameters': {
                 'type': 'object',
-                'properties': {'query': {'type': 'string'}},
+                'properties': {'query': {'type': 'string', 'description': '검색할 보안 관련 키워드'}},
                 'required': ['query']
             }
-        }
+    }
 
+    # [추가] path 파라미터 추가
     def _get_file_tool_schema(self):
         return {
             'name': 'predict_file_malicious',
-            'description': '파일의 SHA-256 해시값을 기반으로 악성 파일 여부를 정밀 분석합니다.',
+            'description': '파일의 SHA-256 해시값 또는 로컬 경로를 기반으로 악성 여부를 분석합니다.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'file_hash': {'type': 'string', 'description': '분석할 파일의 SHA-256 해시 문자열'}
+                    'file_hash': {'type': 'string', 'description': 'SHA-256 해시 문자열'},
+                    'path': {'type': 'string', 'description': '파일의 로컬 임시 경로 (있을 경우 반드시 포함)'}
                 },
                 'required': ['file_hash']
             }
@@ -162,7 +166,13 @@ class AutoGuardAgent:
 
             if run.status == 'completed':
                 messages = await self.client.beta.threads.messages.list(thread_id=thread.id)
-                return messages.data[0].content[0].text.value
+                # 1차 분석 결과 (GPT의 Raw 답변)
+                intermediate_response = messages.data[0].content[0].text.value
+                
+                # [수정] Advisor 엔진을 가동하여 '최종 보안 리포트'로 변환
+                logger.info("[*] Advisor 엔진 가동: 리포트 최적화 중...")
+                final_report = await self.advisor.generate_final_advice(intermediate_response)
+                return final_report
 
             elif run.status == 'requires_action':
                 # 도구 호출 요청 → 실행 후 결과 제출
@@ -178,22 +188,32 @@ class AutoGuardAgent:
                     if fn_name == 'predict_url_malicious':
                         target_url = args.get('url')
                         # 1. 우리 모델 분석
-                        ml_res = self.analyzer.analyze_url(target_url)
                         # 2. 외부 인텔 조회
-                        intel_res = await self.intel_agent.search_web(target_url)
                         # [핵심] 두 결과를 합쳐서 전달 (덮어쓰지 않음)
-                        result = {"internal_analysis": ml_res, "external_intelligence": intel_res}
+                        result = {
+                            "internal": self.analyzer.analyze_url(target_url),
+                            "external": await self.intel_agent.search_web(target_url)
+                        }
                         
                     elif fn_name == 'predict_email_malicious':
                         result = self.analyzer.analyze_email(args.get('text'))
                         
                     elif fn_name == 'predict_file_malicious':
-
+                        # [하이브리드 분석] 내부 모델(mal.py) + 외부 인텔(VirusTotal 등)
                         target_hash = args.get('file_hash')
-                        result = await self.intel_agent.predict_file_malicious(target_hash)
+                        target_path = args.get('path')
+                        
+                        intel_res = await self.intel_agent.predict_file_malicious(target_hash)
+                        ml_res = self.analyzer.analyze_file(target_path) if target_path else {"info": "path not provided"}
+                        result = {"internal_ml_analysis": ml_res, "external_intelligence": intel_res}
 
                     elif fn_name == 'search_threat_intel':
+                        # [수정] Tavily 검색 엔진(IntelAgent)을 실제로 호출하는 구간
+                        # args.get('query')로 에이전트가 생성한 검색어를 넘겨줌
                         result = await self.intel_agent.search_web(args.get('query'))
+    
+                        # 만약 결과가 너무 길어서 에러나면 아래처럼 살짝 잘라야함 (선택사항)
+                        # result = str(result)[:3000]
 
                     tool_outputs.append({
                         "tool_call_id": tool_call.id,
@@ -221,10 +241,16 @@ if __name__ == '__main__':
         print("[!] 프로그램을 시작합니다...") # 이 메시지가 뜨는지 확인!
         intel = IntelAgent()
         agent = AutoGuardAgent(intel_agent=intel)
+        
         print("[!] OpenAI Assistant 생성 중... (잠시만 기다려주세요)")
         await agent.create_inspector()
-
-        test_query = "이 파일 해시 분석해줘: 275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
+        
+        # [수정] 질문을 '검색'이 필요한 내용으로 변경!
+        test_query = "최근 유행하는 LockBit 4.0 랜섬웨어에 대해 분석해줘. 내부 분석 엔진 결과랑 2026년 최신 보안 뉴스 증거를 합쳐서 보고해."
+        
+        # 파일 해시 분석 테스트용 질문 (필요시 사용)
+        # test_query = "이 파일 해시 분석해줘: 275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
+        print(f"\n[사용자 요청]: {test_query}")
         response = await agent.run_agent(test_query)
         print(f"\n[최종 분석 결과]\n{response}")
     asyncio.run(main())
