@@ -427,8 +427,8 @@ def generate_pdf_report(user_input, analysis_type, result, rag_results, rag_summ
     story.append(Paragraph("AutoGuard AI 보안 분석 리포트", T))
     story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#1a1a2e")))
     story.append(Spacer(1, 4))
-    story.append(Paragraph(
-        "⚠️ 본 리포트는 데모용 Mock 데이터 기반입니다. 실제 ML/API 연동 전까지 참고용으로만 활용하세요.", Warn))
+    # story.append(Paragraph(
+    #     "⚠️ 본 리포트는 데모용 Mock 데이터 기반입니다. 실제 ML/API 연동 전까지 참고용으로만 활용하세요.", Warn))
     story.append(Spacer(1, 6))
  
     story.append(Paragraph("분석 대상", H))
@@ -486,7 +486,7 @@ def generate_pdf_report(user_input, analysis_type, result, rag_results, rag_summ
  
     story.append(Spacer(1, 12))
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#aaaaaa")))
-    story.append(Paragraph("⚠️ AutoGuard AI 데모 버전 자동 생성 리포트 (Mock 데이터 기반)", Warn))
+    # story.append(Paragraph("⚠️ AutoGuard AI 데모 버전 자동 생성 리포트 (Mock 데이터 기반)", Warn))
  
     doc.build(story)
     buffer.seek(0)
